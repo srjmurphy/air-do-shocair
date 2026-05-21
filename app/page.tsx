@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Mood = "up" | "down";
 
@@ -9,6 +9,8 @@ type PricePayload = {
   change24h: number;
   mood: Mood;
   lastUpdated: string;
+  cachedAt?: string;
+  isStale?: boolean;
 };
 
 type VistaPayload = {
@@ -22,7 +24,7 @@ type DashboardState = {
   price: PricePayload | null;
   vista: VistaPayload | null;
   loading: boolean;
-  refreshing: boolean;
+  generatingVista: boolean;
   error: string | null;
 };
 
@@ -30,7 +32,7 @@ const initialState: DashboardState = {
   price: null,
   vista: null,
   loading: true,
-  refreshing: false,
+  generatingVista: false,
   error: null,
 };
 
@@ -64,12 +66,12 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 export default function Home() {
   const [state, setState] = useState<DashboardState>(initialState);
+  const hasLoadedPrice = useRef(false);
 
-  const loadDashboard = useCallback(async (isRefresh = false) => {
+  const loadPrice = useCallback(async () => {
     setState((current) => ({
       ...current,
-      loading: !isRefresh && !current.price,
-      refreshing: isRefresh,
+      loading: !current.price,
       error: null,
     }));
 
@@ -82,36 +84,10 @@ export default function Home() {
         loading: false,
         error: null,
       }));
-
-      try {
-        const vista = await fetchJson<VistaPayload>(
-          `/api/vista?mood=${price.mood}`,
-        );
-
-        setState({
-          price,
-          vista,
-          loading: false,
-          refreshing: false,
-          error: null,
-        });
-      } catch (vistaError) {
-        setState((current) => ({
-          ...current,
-          price,
-          loading: false,
-          refreshing: false,
-          error:
-            vistaError instanceof Error
-              ? vistaError.message
-              : "The market loaded, but today's vista could not be generated.",
-        }));
-      }
     } catch (error) {
       setState((current) => ({
         ...current,
         loading: false,
-        refreshing: false,
         error:
           error instanceof Error
             ? error.message
@@ -120,9 +96,46 @@ export default function Home() {
     }
   }, []);
 
+  const generateVista = useCallback(async () => {
+    setState((current) => ({
+      ...current,
+      generatingVista: true,
+      error: null,
+    }));
+
+    try {
+      const price = state.price ?? (await fetchJson<PricePayload>("/api/price"));
+      const vista = await fetchJson<VistaPayload>(`/api/vista?mood=${price.mood}`);
+
+      setState((current) => ({
+        ...current,
+        price,
+        vista,
+        loading: false,
+        generatingVista: false,
+        error: null,
+      }));
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        generatingVista: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Today's vista could not be generated.",
+      }));
+    }
+  }, [state.price]);
+
   useEffect(() => {
-    void loadDashboard();
-  }, [loadDashboard]);
+    if (hasLoadedPrice.current) {
+      return;
+    }
+
+    hasLoadedPrice.current = true;
+    void loadPrice();
+  }, [loadPrice]);
 
   const moodCopy = useMemo(() => {
     const mood = state.price?.mood ?? "up";
@@ -179,11 +192,15 @@ export default function Home() {
 
           <button
             type="button"
-            onClick={() => void loadDashboard(true)}
-            disabled={state.loading || state.refreshing}
+            onClick={() => void generateVista()}
+            disabled={state.loading || state.generatingVista}
             className="rounded-full border border-amber/40 bg-peat/55 px-5 py-3 text-sm font-semibold text-malt shadow-ember backdrop-blur transition hover:border-malt hover:bg-amber/15 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {state.refreshing ? "Calling the hills..." : "Refresh vista"}
+            {state.generatingVista
+              ? "Calling the hills..."
+              : state.vista
+                ? "Regenerate vista"
+                : "Generate vista"}
           </button>
         </header>
 
@@ -247,12 +264,22 @@ export default function Home() {
                 <p className="mt-1 font-semibold text-stone-100">
                   {state.price ? formatDate(state.price.lastUpdated) : "--"}
                 </p>
+                {state.price?.isStale ? (
+                  <p className="mt-1 text-xs text-malt">
+                    Cached while CoinGecko is rate-limiting.
+                  </p>
+                ) : null}
               </div>
             </div>
 
             {state.vista?.prompt ? (
               <p className="mt-5 line-clamp-3 border-t border-white/10 pt-5 text-sm italic leading-6 text-stone-300">
                 {state.vista.prompt}
+              </p>
+            ) : state.price ? (
+              <p className="mt-5 border-t border-white/10 pt-5 text-sm leading-6 text-stone-300">
+                Price loaded. Generate today&apos;s vista when you&apos;re ready to
+                call OpenAI.
               </p>
             ) : null}
           </aside>
@@ -267,7 +294,21 @@ export default function Home() {
               Reading the market weather...
             </p>
             <p className="mt-2 text-sm text-stone-300">
-              Fetching Bitcoin and asking the Highland seer for today&apos;s vista.
+              Fetching Bitcoin. Vista generation waits for your click.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {state.generatingVista ? (
+        <div className="absolute inset-0 z-20 grid place-items-center bg-peat/78 px-6 text-center backdrop-blur-sm">
+          <div>
+            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-2 border-amber/20 border-t-malt" />
+            <p className="mt-5 font-display text-3xl text-malt">
+              Calling the Highland seer...
+            </p>
+            <p className="mt-2 text-sm text-stone-300">
+              This is the paid OpenAI image-generation step.
             </p>
           </div>
         </div>
